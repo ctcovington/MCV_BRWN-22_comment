@@ -1,0 +1,125 @@
+---
+title: "BRWN+22 Comment: Analysis"
+format: 
+    html:
+        toc: true
+code-fold: true
+---
+
+# User Setup
+
+In order to make this code run across machines, it should be sufficient to install the `pacman` R library 
+and set the `repo_directory` variable to the location on your machine where you pulled this repository.
+
+```{r}
+if ( !('pacman' %in% installed.packages()) ) {
+  install.packages('pacman', repos = 'http://cran.us.r-project.org')
+}
+
+# NOTE: YOUR LIBRARY LOCATION HERE
+repo_directory <- '/Users/christiancovington/research/MCV_BRWN+22_comment'
+
+# load libraries
+library(pacman)
+pacman::p_load('data.table', 'ggplot2', 'MetaUtility')
+```
+
+# What is `AME_Z`?
+
+We first wanted to figure out how BRWN+ standardized their marginal effect estimates. 
+We looked in their `data_prep` directory, specifically lines 61-71 of the [002_CRI_Data_Prep](https://github.com/nbreznau/CRI/blob/master/code/data_prep/002_CRI_Data_Prep.Rmd) file. 
+
+They have two primary independent variables (IV) of interest, `Stock` and `Flow`, for which they define the average marginal effects 
+$AME^S_i$ and $AME^F_i$ for each model $i \in [n]$ where $n = 1{,}253$. 
+Their goal was then to put these effect estimates on the same scale.
+Let 
+$$\sigma_{S} = sd \left( \{AME^S_i\}_{i \in [n]} \right)$$ 
+and 
+$$\sigma_{F} = sd \left( \{AME^F_i\}_{i \in [n]} \right)$$ 
+be the standard deviations
+across the stock/flow estimates, respectively. Then they define
+\begin{equation*}
+    AME\_Z_i =
+      \begin{cases}
+          \frac{AME^S_i \cdot \sigma_{S}}{\sigma_{F}} &\text{if model IV} = \text{Stock} \\ 
+          AME^F_i &\text{if model IV} = \text{Flow}
+      \end{cases}
+\end{equation*}
+
+We can look at the distribution of the unstandardized $AME_i$ for each IV, ignoring the 43 cases with a different 
+IV definition.
+```{r, message=FALSE}
+# subset to elements with standardized effect estimate defined
+# NOTE: only models for which it is not defined are those from the original Brady & Finnegan study being replicated and 
+cri_ml <- fread(file.path(repo_directory, 'data/cri_ml.csv'))
+cri_ml <- cri_ml[complete.cases(cri_ml$AME)]
+
+# plot histograms for each
+SF_sub <- cri_ml[main_IV_type %in% c('Stock', 'Flow')]
+AME_plot <- ggplot(SF_sub, aes(x = AME)) + 
+                geom_histogram(colour = 'black', fill = 'white') + 
+                facet_grid(as.factor(SF_sub$main_IV_type))
+AME_plot
+```
+
+# Proportion of effect estimates $\in [-r ,r]$
+
+Now we look at some features of the standardized marginal effect estimate `AME_Z`. 
+We look at our 1,253 models and estimate $\Pr( \vert AME\_Z \vert ) \leq r$
+for a large number of $r \in (0, 0.5]$.
+
+Additionally, we produce calibrated `AME_Z`, (which we call $AME\_Z_{cal}$) calculated 
+using the DerSimonian-Laird estimator and the `MetaUtility::calib_ests` function. This requires standard errors 
+for each estimate, which to our knowledge are not included in the `cri_ml` data set. We recover these from the 
+upper confidence interval variable (`upper`), under the assumption that this was calculated using the typical 
+assumption of the `AME_Z` following a Gaussian sampling distribution.
+
+We plot 
+$\Pr( \vert AME\_Z \vert ) \leq r$ and $\Pr( \vert AME\_Z_{cal} \vert ) \leq r$
+for comparison and product a partial table of results. 
+
+```{r}
+# calculate AME_Z std errs
+cri_ml[, AME_Z_SE := (upper_Z - AME_Z) / qnorm(0.975)]
+lower_truncation_value <- 0.0002
+cri_ml[, AME_Z_SE_trunc := pmax(lower_truncation_value, AME_Z_SE)] # truncate SEs slightly to reduce potential issues in calibrated estimation
+
+# get calibrated effect estimates
+calibrated_AME_Z <- calib_ests(yi = cri_ml$AME_Z, sei = cri_ml$AME_Z_SE_trunc, method = 'DL')
+cri_ml[, calibrated_AME_Z := calibrated_AME_Z]
+
+##################################################
+## get proportion of raw/calibrated average marginal 
+## effects in [-r,r] for various r
+##################################################
+r <- seq(from = 10^(-4), to = 0.5, by = 10^(-4))
+n_r <- length(r)
+prop_r <- rep(0, n_r)
+calibrated_prop_r <- rep(0, n_r)
+for (i in 1:n_r) {
+  prop_r[i] <- mean( abs(cri_ml$AME_Z) <= r[i], na.rm = TRUE) 
+  calibrated_prop_r[i] <- mean( abs(cri_ml$calibrated_AME_Z) <= r[i], na.rm = TRUE) 
+}
+prop_r_dt <- data.table(r = r, AME_Z = prop_r, AME_Z_calibrated = calibrated_prop_r)
+prop_r_dt_long <- melt(prop_r_dt, id.vars = 'r')
+prop_r_plot <- ggplot(prop_r_dt_long, aes(x = r, y = value, colour = variable)) + 
+                    geom_line()
+prop_r_plot 
+
+knitr::kable(prop_r_dt[seq(10, 1000, 10), ])
+```
+
+Finally, we can find the caliper (i.e. the value of `r`) that is closest, among those we tested, to containing 90% of the observations, for both the raw and 
+calibrated AME_Z.
+
+```{r}
+# find caliper that comes closest to containing exactly 90% of raw estimates
+ind <- which.min( abs( 0.90 - prop_r_dt$AME_Z ) )
+print('r such that Pr(|AME_Z <= r| is approximately 0.9) for raw AME_Z')
+prop_r_dt[ind,]
+
+# and for calibrated estimates
+print('r such that Pr(|AME_Z_cal <= r| is approximately 0.9) for calibrated AME_Z_cal')
+ind <- which.min( abs( 0.90 - prop_r_dt$AME_Z_calibrated ) )
+prop_r_dt[ind,]
+```

@@ -1,0 +1,96 @@
+---
+title: "BRWN+22 Comment: Data Setup"
+format: 
+    html:
+        toc: true
+code-fold: true
+---
+
+# User Setup
+
+In order to make this code run across machines, it should be sufficient to install the `pacman` R library 
+and set the `repo_directory` variable to the location on your machine where you pulled this repository.
+
+```{r}
+if ( !('pacman' %in% installed.packages()) ) {
+  install.packages('pacman', repos = 'http://cran.us.r-project.org')
+}
+
+# NOTE: YOUR LIBRARY LOCATION HERE
+repo_directory <- '/Users/christiancovington/research/MCV_BRWN+22_comment'
+
+# load libraries
+library(pacman)
+pacman::p_load('dplyr')
+```
+
+# Data loading
+
+We want to operate on the same data set as the original authors do in the 
+[05_CRI_Main_Analyses_Variance_Function.Rmd](https://github.com/nbreznau/CRI/blob/master/code/05_CRI_Main_Analyses_Variance_Function.Rmd) 
+file for their main analysis. 
+
+We downloaded the `cri.csv` and `cri_team.csv` files from their 
+[data directory](https://github.com/nbreznau/CRI/tree/master/data) into our own data directory 
+and then directly copy their code from their 
+[05_CRI_Main_Analyses_Variance_Function.Rmd](https://github.com/nbreznau/CRI/blob/master/code/05_CRI_Main_Analyses_Variance_Function.Rmd) file up through the creation of a new `cri_ml.csv`
+file which will serve as the basis of our analysis.
+
+
+```{r}
+cri <- read.csv(file = (file.path(repo_directory, 'data/cri.csv')), header = TRUE)
+cri_team <- read.csv(file = (file.path(repo_directory, 'data/cri_team.csv')), header = TRUE)
+
+# setup multilevel dataset
+cri_ml <- dplyr::select(cri,u_teamid, id, u_delibtreatmentgroup1, AME:main_IV_source, main_IV_measurement:package, countries, Jobs:anynonlin,AME_Z,lower_Z,upper_Z,Hsup,Hrej,Hno,AME_sup_p05:AME_ns_p05,u_expgroup1,belief_strength:belief_ipred, HresultF, STATISTICS_SKILL, BELIEF_HYPOTHESIS, TOPIC_KNOWLEDGE, MODEL_SCORE, PRO_IMMIGRANT)
+
+# create a team ID variable to identify the independent tests by team. Again, 16 of 71 teams had independent conclusions - seeing stock v flow immigration measures as representative of independent tests of the hypothesis. Therefore, we have a team-test level that replaces the team level.
+
+cri_ml$team <- cri_ml %>% group_indices(u_teamid, HresultF)
+
+cri_ml <- dplyr::select(cri_ml, u_teamid, id, team, AME_Z, upper_Z, lower_Z, everything())
+
+# remove team 0 (this was the original Brady and Finnigan study)
+cri_ml <- subset(cri_ml, u_teamid != 0)
+cri_team <- subset(cri_team, u_teamid != 0)
+
+#mean replace team 27
+cri_team <- cri_team %>%
+  mutate(belief_ipred = ifelse(is.na(belief_ipred), mean(belief_ipred, na.rm = TRUE), belief_ipred),
+         topic_ipred = ifelse(is.na(topic_ipred), mean(topic_ipred, na.rm = TRUE), topic_ipred),
+         stats_ipred = ifelse(is.na(stats_ipred), mean(stats_ipred, na.rm = TRUE), stats_ipred),)
+
+cri_ml <- cri_ml %>%
+  group_by(team) %>%
+  mutate(AME_Z_b = mean(AME_Z, na.rm = TRUE),
+         AME_Z_w =AME_Z-AME_Z_b,
+         jobs_b = mean(Jobs, na.rm = TRUE),
+         unemp_b = mean(Unemp, na.rm = TRUE),
+         incdiff_b = mean(IncDiff, na.rm = TRUE),
+         oldage_b = mean(OldAge, na.rm = TRUE),
+         house_b = mean(House, na.rm = TRUE),
+         health_b = mean(Health, na.rm = TRUE),
+         jobs_w = Jobs-jobs_b,
+         unemp_w = Unemp-unemp_b,
+         incdiff_w = IncDiff-incdiff_b,
+         oldage_w = OldAge-oldage_b,
+         house_w = House-house_b,
+         health_w = Health-health_b,
+         scale_b = mean(Scale, na.rm = TRUE),
+         scale_w = Scale-scale_b,
+         un_emp_rate_ivC = ifelse(emplrate_ivC == 1 | unemprate_ivC == 1, 1, 0)) %>%
+  ungroup()
+
+# create factors for measurement
+cri_ml <- cri_ml %>%
+  mutate(main_IV_factor = as.factor(main_IV_measurement))
+
+# team 27 is missing the survey variables
+# as it is just one team, mean replacement should be fine
+cri_ml <- cri_ml %>%
+  mutate(stats_ipred = ifelse(is.na(stats_ipred), mean(stats_ipred, na.rm=T), stats_ipred),
+         belief_ipred = ifelse(is.na(belief_ipred), mean(belief_ipred, na.rm =T), belief_ipred),
+         topic_ipred = ifelse(is.na(topic_ipred), mean(topic_ipred, na.rm =T), topic_ipred))
+
+write.csv(cri_ml, file.path(repo_directory, 'data/cri_ml.csv'))
+```
